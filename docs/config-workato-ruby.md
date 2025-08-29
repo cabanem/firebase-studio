@@ -1,6 +1,7 @@
 # Configure Firebase for Ruby with Workato extension
 
-**Objective**
+## Objective
+
 We need to set up a Workato connector development environment inside Google Firebase Studio (`studio.girebase.google.com`)
 
 **Plan**
