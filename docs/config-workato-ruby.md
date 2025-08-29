@@ -8,6 +8,8 @@ Set up a Workato connector development environment inside **Google Firebase Stud
 1. Verify what’s enabled in your workspace.
 2. Declare a reproducible toolchain with **Nix**.
 3. Install **Ruby**, **Bundler**, and **workato-connector-sdk** (with native build prerequisites).
+4. Make installs **deterministic** and **auditable** (known locations, vendored gems, lockfile hygiene).
+5. Provide verification scripts and CI guardrails.
 
 ---
 
@@ -40,7 +42,7 @@ ls -la .idx || echo "no .idx/ directory found"
     - Compilers
     - Native libraries required by transitive dependencies (e.g., `charlock_holmes`, `nokogiri`)
   - Configure Bundler and Launchy for headless execution within the IDE.
-- Why these choices?
+- Rationale
   - Firebase Studio manages system dependencies through **Nix** packages.
   - ICU (`pkgs.icu`) is required by `charlock_holmes`, a Workato SDK runtime dependency.
     - If auto-detection fails, set `BUNDLE_BUILD__CHARLOCK_HOLMES` so Bundler passes `--with-icu-dir=…` during compilation.
@@ -52,15 +54,14 @@ ls -la .idx || echo "no .idx/ directory found"
 # .idx/dev.nix
 { pkgs, ... }: {
 
-  # Choose an appropriate nixpkgs channel.
-  # You may switch to "stable-24.05" or "unstable" if you need newer packages.
+  # Choose an appropriate nixpkgs channel, "unstable" for newest packages
   channel = "stable-24.05";
 
   # System tools and libraries needed to build Ruby gems with native extensions.
   packages = [
     pkgs.ruby_3_1
 
-    # Useful and sometimes necessary tools for native gems
+    # For native gems
     pkgs.bundler
     pkgs.git
     pkgs.gcc
@@ -76,12 +77,11 @@ ls -la .idx || echo "no .idx/ directory found"
     pkgs.zlib
     pkgs.openssl
 
-    # optional: certificate bundle for TLS if you make HTTPS calls locally
+    # Certificate bundle for TLS (i.e., local HTTP calls)
     pkgs.cacert
   ];
 
   # Editor extensions from Open VSX
-  # Prefer Ruby LSP, fall back to the older "rebornix.ruby" if needed.
   idx.extensions = [
     "Shopify.ruby-lsp" # VS Code Ruby LSP (if available in Open VSX)
     "rebornix.ruby"    # fallback, legacy Ruby extension
@@ -91,16 +91,32 @@ ls -la .idx || echo "no .idx/ directory found"
   env = {
     # Install gems into the project (persisted) instead of global/system gem dir
     BUNDLE_PATH = "vendor/bundle";
+    BUNDLE_BIN = "bin";
     BUNDLE_JOBS = "4";
     BUNDLE_RETRY = "3";
 
-    # Ensure charlock_holmes picks up ICU in this Nix env:
-    # Bundler reads env var keys with double underscore as gem-specific build flags.
+    # === Native builds use our pinned Nix libraries ===
+
+    # Nokogiri: compile against system libxml2/libxslt from Nix (not vendor copies)
+    NOKOGIRI_USE_SYSTEM_LIBRARIES = "1";
+    BUNDLE_BUILD__NOKOGIRI =
+      "--use-system-libraries " +
+      "--with-xml2-include=${pkgs.libxml2.dev}/include/libxml2 " +
+      "--with-xml2-lib=${pkgs.libxml2.out}/lib " +
+      "--with-xslt-include=${pkgs.libxslt.dev}/include " +
+      "--with-xslt-lib=${pkgs.libxslt.out}/lib";
+
+    # charlock_holmes: link to Nix ICU
     BUNDLE_BUILD__CHARLOCK_HOLMES = "--with-icu-dir=${pkgs.icu.dev}";
 
-    # In a headless IDE, Launchy shouldn't try to open a graphical browser.
-    # This makes OAuth URLs print in the terminal instead of failing.
+    # In a headless IDE, Launchy shouldn't open a graphical browser (OAuth URLs print in the terminal instead of failing.)
     LAUNCHY_DRY_RUN = "true";
+
+    # === Optional (enable after Gemfile.lock exists) ===
+    # BUNDLE_DEPLOYMENT = "true";  # stricter, uses vendor/bundle; fails on lockfile drift
+    # BUNDLE_FROZEN     = "true";  # refuse to change Gemfile.lock
+    # BUNDLE_LOCKFILE_CHECKSUMS = "true"; # Bundler 2.6+: stronger supply-chain checks
+    # BUNDLE_FORCE_RUBY_PLATFORM = "true"; # prefer compiling native gems locally
   };
 
   # (Optional) Enable web previews if you have a local server to run.
@@ -154,6 +170,121 @@ bundle exec workato -v
 bundle exec workato help
 ```
 
+## Make installs deterministic (i.e., in known locations)
+The following steps ensure that gems and native extensions always install to known paths and compile against pinned libraries, with no surprises across machines.
+
+### 6 — Vendor and lock gems
+Run these to make installs reproducible and network-optional:
+```bash
+# Add platforms once so the lockfile works across x86_64 and arm64 Linux
+bundle lock --add-platform ruby x86_64-linux aarch64-linux
+
+# Backfill checksums for existing lockfiles (Bundler 2.6+)
+bundle lock --add-checksums
+
+# Cache every dependency into vendor/cache (including all platforms)
+bundle cache --all --all-platforms
+```
+> `vendor/cache` will contain the .gem files so teammates/CI can install offline and from a known source.
+> After the first successful install (Gemfile.lock exists), consider enabling stricter settings by uncommenting in .idx/dev.nix:
+> - `BUNDLE_DEPLOYMENT=true`
+> - `BUNDLE_FROZEN=true`
+
+### 7 - One-commmand bootstrap
+1. Create script/bootstrap so every developer and CI uses the same bootstrap:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Ensure lockfile captures all relevant platforms & checksums
+bundle lock --add-platform ruby x86_64-linux aarch64-linux
+bundle lock --add-checksums
+
+# Vendor dependencies to known location
+bundle cache --all --all-platforms
+
+# Install exactly what's in Gemfile.lock, from the cache, into vendor/bundle
+bundle install --local
+```
+2. Then run:
+```bash
+chmod +x script/bootstrap
+./script/bootstrap
+```
+
+### 8 - Verify install are in the correct location
+1. Add script/verify to assert that everything landed under vendor/bundle and looks healthy:
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "== Bundler settings =="
+bundle config
+
+echo "== Paths of installed gems =="
+bundle list --paths
+
+echo "== Path of a specific gem (example: nokogiri) =="
+bundle info nokogiri --path || true
+
+echo "== Doctor =="
+bundle doctor || { echo "bundle doctor found issues"; exit 1; }
+
+echo "== Ensure everything landed under vendor/bundle =="
+if bundle list --paths | grep -v "vendor/bundle" | grep -E "[^ ]"; then
+  echo "❌ Found gems not under vendor/bundle"; exit 2
+else
+  echo "✅ All gems are under vendor/bundle"
+fi
+```
+2. Run:
+```bash
+chmod +x script/verify
+./script/verify
+```
+### 9 - Audit native linkage (optional but recommended)
+1. Ensure native extensions link to Nix store paths, not /usr/lib:
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+bad=0
+for so in $(find vendor/bundle -name '*.so'); do
+  if ldd "$so" | grep -qE '/usr/(lib|local)'; then
+    echo "❌ Non-Nix linkage: $so"
+    bad=1
+  fi
+done
+exit $bad
+```
+2. Also consider adding helpful checks:
+```bash
+# See what Nokogiri linked against
+ruby -r nokogiri -e 'puts Nokogiri::VERSION_INFO'
+
+# Inspect compile logs
+find vendor/bundle -type f -name mkmf.log -print -exec sed -n '1,80p' {} \; | less
+```
+
+### 10 - CI Recipe
+### 11 - Stict Nix pinning
+To achieve bit-for-bit reproducibility, pin nixpkgs to a commit and draw packages from that set. For example:
+```bash
+# .idx/dev.nix (snippet)
+{ pkgs, ... }:
+let
+  pinnedPkgs = import (builtins.fetchTarball
+    "https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz") {};
+in {
+  packages = [
+    pinnedPkgs.ruby_3_1
+    pinnedPkgs.bundler
+    pinnedPkgs.gcc pinnedPkgs.gnumake pinnedPkgs.pkg-config
+    pinnedPkgs.icu pinnedPkgs.libxml2 pinnedPkgs.libxslt pinnedPkgs.zlib pinnedPkgs.openssl
+    pinnedPkgs.cacert
+  ];
+}
+```
 ---
 
 ## Additional Notes
@@ -199,6 +330,8 @@ bundle exec rspec
 |----------------------|-----------------------------------------------|:-------:|
 | `.idx/dev.nix`       | Environment contract                           |    ✓    |
 | `Gemfile`, `Gemfile.lock`, `.bundle/config` | Contains `BUNDLE_PATH: vendor/bundle` |    ✓    |
+| `vendor/cache` | Vendored gem tarballs for offline/known-source installs | ✓  |
+| `.bundle/config` | Local machine config (redundance with env in dev.nix | ✗ |
 | `vendor/bundle`      | Do not commit; let Bundler restore from `Gemfile.lock` |    ✗    |
 | `master.key`         | Created when settings are encrypted            |    ✗    |
 
