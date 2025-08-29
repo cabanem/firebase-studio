@@ -1,0 +1,30 @@
+# cloudbuild.yaml — Bootstrap and verify Workato connector with Nix in Cloud Build
+# Trigger via Cloud Build with repo as source.
+steps:
+  - name: 'nixos/nix:2.18.1'
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        export BUNDLE_PATH=vendor/bundle
+        export BUNDLE_BIN=bin
+        export NOKOGIRI_USE_SYSTEM_LIBRARIES=1
+
+        # Launch a Nix shell that mirrors the dev toolchain declared in .idx/dev.nix
+        nix shell           nixpkgs/nixos-24.05#ruby_3_1           nixpkgs/nixos-24.05#bundler           nixpkgs/nixos-24.05#gcc           nixpkgs/nixos-24.05#gnumake           nixpkgs/nixos-24.05#pkg-config           nixpkgs/nixos-24.05#icu           nixpkgs/nixos-24.05#libxml2           nixpkgs/nixos-24.05#libxslt           nixpkgs/nixos-24.05#zlib           nixpkgs/nixos-24.05#openssl           nixpkgs/nixos-24.05#cacert           --command bash -lc '
+            set -euo pipefail
+            # Resolve include/lib paths from pkg-config inside the Nix shell
+            LIBXML2_INC="$(pkg-config --variable=includedir libxml-2.0)/libxml2"
+            LIBXML2_LIB="$(pkg-config --variable=libdir libxml-2.0)"
+            XSLT_INC="$(pkg-config --variable=includedir libxslt)"
+            XSLT_LIB="$(pkg-config --variable=libdir libxslt)"
+            ICU_DEV="$(pkg-config --variable=prefix icu-i18n)"
+
+            export BUNDLE_BUILD__NOKOGIRI="--use-system-libraries --with-xml2-include=${LIBXML2_INC} --with-xml2-lib=${LIBXML2_LIB} --with-xslt-include=${XSLT_INC} --with-xslt-lib=${XSLT_LIB}"
+            export BUNDLE_BUILD__CHARLOCK_HOLMES="--with-icu-dir=${ICU_DEV}"
+
+            chmod +x script/bootstrap script/verify || true
+            ./script/bootstrap
+            ./script/verify
+          '
