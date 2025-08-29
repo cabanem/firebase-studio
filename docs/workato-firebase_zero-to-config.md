@@ -10,7 +10,8 @@ We need to:
 * Install the `workato-connector-sdk` gem and test tooling (RSpec, VCR),
 * Generate a **checked‑in** environment config so any teammate who opens the workspace gets the same setup automatically.
 
-> **Why these steps?**
+> <strong><em>Why these steps?</em></strong> <br/>
+>
 > Firebase Studio workspaces run on a Linux VM and are configured declaratively with a `.idx/dev.nix` file. Anything we “apt-get” manually isn’t guaranteed to persist; defining it in `dev.nix` is the supported, reproducible way.
 
 ---
@@ -106,6 +107,8 @@ We need to:
 * The SDK gem requires **Ruby ≥ 2.7.6**; Ruby 3.2 satisfies that while staying broadly compatible.
 * Installing gems with Bundler into your **repo** (`vendor/bundle`) + generating **binstubs** puts `workato` and `rspec` under `./bin`, which we add to `PATH` via `dev.nix`. That avoids system-level installs (which don’t persist).
 
+> <strong>Rebuild</strong>
+> <br/>
 > After saving `dev.nix`, open the Command Palette and run **Firebase Studio: Rebuild (Hard restart)** to apply it.
 > A rebuild is how we “apply” changes to the environment. 
 
@@ -126,7 +129,7 @@ ruby -v
 
 ---
 
-## 4) Create your first connector skeleton (locally, in Firebase Studio)
+### 4) Create your first connector skeleton (locally, in Firebase Studio)
 
 From the Terminal at your project root:
 
@@ -152,7 +155,7 @@ bundle exec rspec
 
 ---
 
-## 5) Day‑to‑day development loop
+### 5) Day‑to‑day development loop
 
 Common CLI actions (run from inside connector folder unless noted):
 
@@ -176,7 +179,7 @@ Common CLI actions (run from inside connector folder unless noted):
 
 ---
 
-## 6) Push your connector into a Workato workspace
+### 6) Push your connector into a Workato workspace
 
 1. In Workato, create an **API Client** (Developer API) and generate an **API token** with permissions for the SDK push endpoints.
 
@@ -199,7 +202,7 @@ Common CLI actions (run from inside connector folder unless noted):
 
 ---
 
-## 7) Handling connections & OAuth2 in a browser IDE
+### 7) Handling connections & OAuth2 in a browser IDE
 
 * To store **credentials** locally for testing, use encrypted settings:
 
@@ -232,7 +235,9 @@ Common CLI actions (run from inside connector folder unless noted):
 
   See the CLI `oauth2` options for details (`--port`, `--ip`, `--https`).
 
-> Tip: Firebase Studio “Previews” are great for app servers you run (web/Android) but aren’t always suitable as public OAuth callback endpoints from third‑party providers. Use a tunnel when you need an externally reachable HTTPS callback.
+> <strong>Tip</strong><br/>
+> <br/>
+> Firebase Studio “Previews” are great for app servers you run (web/Android) but aren’t always suitable as public OAuth callback endpoints from third‑party providers. Use a tunnel when you need an externally reachable HTTPS callback.
 
 ---
 
